@@ -25,7 +25,7 @@ import {
 } from './TextBlock.styles'
 import {TEXT_STYLES} from './textStyles'
 
-const DEBUG_RENDERING = true
+const DEBUG_RENDERING = false
 
 function getRandomColor() {
   const letters = '0123456789ABCDEF'
