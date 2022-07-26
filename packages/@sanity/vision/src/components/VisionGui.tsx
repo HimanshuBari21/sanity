@@ -1,26 +1,25 @@
 /* eslint-disable complexity */
-import React from 'react'
-import queryString from 'query-string'
+import React, {ChangeEvent, type RefObject} from 'react'
 import SplitPane from 'react-split-pane'
-import {PlayIcon, StopIcon, CopyIcon} from '@sanity/icons'
+import type {MutationEvent, SanityClient} from '@sanity/client'
+import {PlayIcon, StopIcon, CopyIcon, ErrorOutlineIcon} from '@sanity/icons'
 import isHotkey from 'is-hotkey'
 import {Flex, Card, Stack, Box, Hotkeys, Select, Text, TextInput, Tooltip, Grid} from '@sanity/ui'
-import studioClient from 'part:@sanity/base/client'
-import {FormFieldValidationStatus} from 'sanity'
-import config from 'config:@sanity/vision'
-import {storeState, getState} from '../util/localState'
+import type {Subscription} from 'rxjs'
+import {VisionCodeMirror} from '../codemirror/VisionCodeMirror'
+import {getLocalStorage, LocalStorageish} from '../util/localStorage'
 import {parseApiQueryString} from '../util/parseApiQueryString'
-import prefixApiVersion from '../util/prefixApiVersion'
+import {validateApiVersion} from '../util/validateApiVersion'
+import {prefixApiVersion} from '../util/prefixApiVersion'
 import {tryParseParams} from '../util/tryParseParams'
 import {encodeQueryString} from '../util/encodeQueryString'
-import {apiVersions} from '../apiVersions'
+import {API_VERSIONS} from '../apiVersions'
 import {ResizeObserver} from '../util/resizeObserver'
-import DelayedSpinner from './DelayedSpinner'
-import QueryEditor from './QueryEditor'
-import ParamsEditor from './ParamsEditor'
-import ResultView from './ResultView'
-import NoResultsDialog from './NoResultsDialog'
-import QueryErrorDialog from './QueryErrorDialog'
+import type {VisionProps} from '../types'
+import {DelayedSpinner} from './DelayedSpinner'
+import {ParamsEditor, type ParamsEditorChangeEvent} from './ParamsEditor'
+import {ResultView} from './ResultView'
+import {QueryErrorDialog} from './QueryErrorDialog'
 import {
   Root,
   Header,
@@ -39,39 +38,31 @@ import {
   TimingsFooter,
   TimingsCard,
   TimingsTextContainer,
-  GlobalCodeMirrorStyle,
 } from './VisionGui.styled'
 
-/* eslint-disable import/no-unassigned-import, import/no-unresolved */
-import 'codemirror/lib/codemirror.css?raw'
-import 'codemirror/theme/material.css?raw'
-import 'codemirror/addon/hint/show-hint.css?raw'
-
-function nodeContains(node, other) {
+function nodeContains(node: Node, other: EventTarget | Node | null): boolean {
   if (!node || !other) {
     return false
   }
+
   // eslint-disable-next-line no-bitwise
-  return node === other || !!(node.compareDocumentPosition(other) & 16)
-}
-/* eslint-enable import/no-unassigned-import, import/no-unresolved */
-
-const sanityUrl = /\.api\.sanity\.io\/(vx|v1|v\d{4}-\d\d-\d\d)\/.*?(?:query|listen)\/(.*?)\?(.*)/
-const isRunHotkey = (event) => isHotkey('ctrl+enter', event) || isHotkey('mod+enter', event)
-
-const handleCopyUrl = () => {
-  const emailLink = document.querySelector('#vision-query-url')
-  emailLink.select()
-
-  try {
-    document.execCommand('copy')
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error('Unable to copy to clipboard :(')
-  }
+  return node === other || !!(node.compareDocumentPosition(other as Node) & 16)
 }
 
-function calculatePaneSizeOptions(rootHeight) {
+const sanityUrl =
+  /\.(?:api|apicdn)\.sanity\.io\/(vx|v1|v\d{4}-\d\d-\d\d)\/.*?(?:query|listen)\/(.*?)\?(.*)/
+const isRunHotkey = (event: KeyboardEvent) =>
+  isHotkey('ctrl+enter', event) || isHotkey('mod+enter', event)
+
+interface PaneSizeOptions {
+  defaultSize: number
+  size?: number
+  allowResize: boolean
+  minSize: number
+  maxSize: number
+}
+
+function calculatePaneSizeOptions(rootHeight: number): PaneSizeOptions {
   return {
     defaultSize: rootHeight / 2,
     size: rootHeight > 550 ? undefined : rootHeight * 0.4,
@@ -81,52 +72,125 @@ function calculatePaneSizeOptions(rootHeight) {
   }
 }
 
-const DEFAULT_API_VERSION = '2021-03-25'
+interface VisionGuiProps extends VisionProps {
+  datasets: string[]
+}
 
-class VisionGui extends React.PureComponent {
-  constructor(props) {
+interface VisionGuiState {
+  // Selected options
+  dataset: string
+  apiVersion: string
+  customApiVersion: string | false
+
+  // Selected options validation state
+  isValidApiVersion: boolean
+
+  // URL used to execute query/listener
+  url?: string | undefined
+
+  // Inputs
+  query: string
+  rawParams: string
+
+  // Parsed input
+  params: Record<string, unknown> | Error | undefined
+  paramsError?: string | undefined
+  hasValidParams: boolean
+
+  // Query/listen result
+  queryResult?: unknown | undefined
+  listenMutations: MutationEvent[]
+  error?: Error | undefined
+
+  // Operation timings
+  queryTime?: number | undefined
+  e2eTime?: number | undefined
+
+  // Operation state, used to trigger re-renders (spinners etc)
+  queryInProgress: boolean
+  listenInProgress: boolean
+
+  // UI drawing state
+  paneSizeOptions: PaneSizeOptions
+}
+
+export class VisionGui extends React.PureComponent<VisionGuiProps, VisionGuiState> {
+  _visionRoot: RefObject<HTMLDivElement>
+  _queryEditorContainer: RefObject<HTMLDivElement>
+  _paramsEditorContainer: RefObject<HTMLDivElement>
+  _operationUrlElement: RefObject<HTMLInputElement>
+  _customApiVersionElement: RefObject<HTMLInputElement>
+  _resizeListener: ResizeObserver | undefined
+  _querySubscription: Subscription | undefined
+  _listenSubscription: Subscription | undefined
+  _client: SanityClient
+  _localStorage: LocalStorageish
+
+  constructor(props: VisionGuiProps) {
     super(props)
 
-    const lastQuery = getState('lastQuery')
-    const lastParams = getState('lastParams')
+    this._localStorage = getLocalStorage(props.client.config().projectId || 'default')
 
-    const firstDataset = this.props.datasets[0] && this.props.datasets[0].name
-    const defaultDataset = studioClient.config().dataset || firstDataset
-    const defaultApiVersion = prefixApiVersion(`${config.defaultApiVersion || DEFAULT_API_VERSION}`)
+    const lastQuery = this._localStorage.get('lastQuery', '')
+    const lastParams = this._localStorage.get('lastParams', '{\n  \n}')
 
-    let dataset = getState('dataset', defaultDataset)
-    let apiVersion = getState('apiVersion', defaultApiVersion)
+    const defaultDataset = props.client.config().dataset || props.datasets[0]
+    const defaultApiVersion = prefixApiVersion(`${props.config.defaultApiVersion}`)
 
-    if (!this.props.datasets.some(({name}) => name === dataset)) {
+    let dataset = this._localStorage.get('dataset', defaultDataset)
+    let apiVersion = this._localStorage.get('apiVersion', defaultApiVersion)
+    const customApiVersion = API_VERSIONS.includes(apiVersion) ? false : apiVersion
+
+    if (!this.props.datasets.some((name) => name === dataset)) {
       dataset = defaultDataset
     }
 
-    if (!apiVersions.includes(apiVersion)) {
-      apiVersion = apiVersions[0]
+    if (!API_VERSIONS.includes(apiVersion)) {
+      apiVersion = API_VERSIONS[0]
     }
 
     this._visionRoot = React.createRef()
-    this._resizeListener = React.createRef()
+    this._operationUrlElement = React.createRef()
     this._queryEditorContainer = React.createRef()
     this._paramsEditorContainer = React.createRef()
+    this._customApiVersionElement = React.createRef()
 
-    this.client = studioClient.withConfig({apiVersion, dataset})
-
-    this.subscribers = {}
+    this._client = props.client.withConfig({apiVersion, dataset})
 
     // Initial root height without header
-    const bodyHeight = document.body.getBoundingClientRect().height - 60
+    const bodyHeight =
+      typeof window !== 'undefined' && typeof document !== 'undefined'
+        ? document.body.getBoundingClientRect().height - 60
+        : 0
+
+    const params = lastParams ? tryParseParams(lastParams) : undefined
 
     this.state = {
-      paramValidationMarkers: [],
-      validParams: true,
-      query: lastQuery,
-      params: lastParams && tryParseParams(lastParams),
-      rawParams: lastParams,
-      queryInProgress: false,
-      paneSizeOptions: calculatePaneSizeOptions(bodyHeight),
+      // Selected options
       dataset,
       apiVersion,
+      customApiVersion,
+
+      // Selected options validation state
+      isValidApiVersion: customApiVersion ? validateApiVersion(customApiVersion) : false,
+
+      // Inputs
+      query: lastQuery,
+      rawParams: lastParams,
+
+      // Parsed input
+      params,
+      hasValidParams: !(params instanceof Error),
+
+      // Query/listen results
+      listenMutations: [],
+
+      // Operation state
+      queryInProgress: false,
+      listenInProgress: false,
+
+      // UI drawing state
+      paneSizeOptions: calculatePaneSizeOptions(bodyHeight),
     }
 
     this.handleChangeDataset = this.handleChangeDataset.bind(this)
@@ -137,6 +201,7 @@ class VisionGui extends React.PureComponent {
     this.handleQueryExecution = this.handleQueryExecution.bind(this)
     this.handleQueryChange = this.handleQueryChange.bind(this)
     this.handleParamsChange = this.handleParamsChange.bind(this)
+    this.handleCopyUrl = this.handleCopyUrl.bind(this)
     this.handlePaste = this.handlePaste.bind(this)
     this.handleKeyDown = this.handleKeyDown.bind(this)
     this.handleResize = this.handleResize.bind(this)
@@ -157,11 +222,15 @@ class VisionGui extends React.PureComponent {
   }
 
   handleResizeListen() {
-    this._resizeListener.current = new ResizeObserver(this.handleResize)
-    this._resizeListener.current.observe(this._visionRoot.current)
+    if (!this._visionRoot.current) {
+      return
+    }
+
+    this._resizeListener = new ResizeObserver(this.handleResize)
+    this._resizeListener.observe(this._visionRoot.current)
   }
 
-  handleResize(entries) {
+  handleResize(entries: ResizeObserverEntry[]) {
     const entry = entries?.[0]
 
     this.setState((prevState) => ({
@@ -171,12 +240,16 @@ class VisionGui extends React.PureComponent {
   }
 
   cancelResizeListener() {
-    if (this._resizeListener.current) {
-      this._resizeListener.current.disconnect()
+    if (this._resizeListener) {
+      this._resizeListener.disconnect()
     }
   }
 
-  handlePaste(evt) {
+  handlePaste(evt: ClipboardEvent) {
+    if (!evt.clipboardData) {
+      return
+    }
+
     const data = evt.clipboardData.getData('text/plain')
     const match = data.match(sanityUrl)
     if (!match) {
@@ -184,26 +257,26 @@ class VisionGui extends React.PureComponent {
     }
 
     const [, apiVersion, dataset, urlQuery] = match
-    const qs = queryString.parse(urlQuery)
     let parts
 
     try {
+      const qs = new URLSearchParams(urlQuery)
       parts = parseApiQueryString(qs)
     } catch (err) {
       console.warn('Error while trying to parse API URL: ', err.message) // eslint-disable-line no-console
       return // Give up on error
     }
 
-    if (this.state.data !== dataset) {
-      storeState('dataset', dataset)
+    if (this.state.dataset !== dataset) {
+      this._localStorage.set('dataset', dataset)
     }
 
     if (this.state.apiVersion !== apiVersion) {
-      storeState('apiVersion', apiVersion)
+      this._localStorage.set('apiVersion', apiVersion)
     }
 
     evt.preventDefault()
-    this.client.config({dataset, apiVersion})
+    this._client.config({dataset, apiVersion})
     this.setState(
       {
         dataset,
@@ -219,89 +292,88 @@ class VisionGui extends React.PureComponent {
   }
 
   cancelQuery() {
-    if (!this.subscribers.query) {
+    if (!this._querySubscription) {
       return
     }
 
-    this.subscribers.query.unsubscribe()
-    this.subscribers.query = null
+    this._querySubscription.unsubscribe()
+    this._querySubscription = undefined
   }
 
   cancelListener() {
-    if (!this.subscribers.listen) {
+    if (!this._listenSubscription) {
       return
     }
 
-    this.subscribers.listen.unsubscribe()
-    this.subscribers.listen = null
+    this._listenSubscription.unsubscribe()
+    this._listenSubscription = undefined
   }
 
   cancelEventListener() {
     window.removeEventListener('keydown', this.handleKeyDown)
   }
 
-  handleChangeDataset(evt) {
+  handleChangeDataset(evt: ChangeEvent<HTMLSelectElement>) {
     const dataset = evt.target.value
-    storeState('dataset', dataset)
+    this._localStorage.set('dataset', dataset)
     this.setState({dataset})
-    this.client.config({dataset})
+    this._client.config({dataset})
     this.handleQueryExecution()
   }
 
-  handleChangeApiVersion(evt) {
+  handleChangeApiVersion(evt: ChangeEvent<HTMLSelectElement>) {
     const apiVersion = evt.target.value
     if (apiVersion === 'other') {
-      this.setState({customApiVersion: true})
+      this.setState({customApiVersion: 'v'}, () => {
+        this._customApiVersionElement.current?.focus()
+      })
       return
     }
 
-    storeState('apiVersion', apiVersion)
-    this.setState({apiVersion, customApiVersion: undefined})
-    this.client.config({apiVersion})
+    this._localStorage.set('apiVersion', apiVersion)
+    this.setState({apiVersion, customApiVersion: false})
+    this._client.config({apiVersion})
     this.handleQueryExecution()
   }
 
-  handleCustomApiVersionChange(evt) {
-    const customApiVersion = evt.target.value
-    const parseableApiVersion = customApiVersion
-      .replace(/^v/, '')
-      .trim()
-      .match(/^\d{4}-\d{2}-\d{2}$/)
-
-    const isValidApiVersion = !isNaN(Date.parse(parseableApiVersion))
+  handleCustomApiVersionChange(evt: ChangeEvent<HTMLInputElement>) {
+    const customApiVersion = evt.target.value || ''
+    const isValidApiVersion = validateApiVersion(customApiVersion)
 
     this.setState(
       (prevState) => ({
         apiVersion: isValidApiVersion ? customApiVersion : prevState.apiVersion,
-        customApiVersion: customApiVersion || true,
+        customApiVersion: customApiVersion || 'v',
         isValidApiVersion,
       }),
       () => {
-        if (!this.state.isValidApiVersion) {
+        if (!this.state.isValidApiVersion || typeof this.state.customApiVersion !== 'string') {
           return
         }
 
-        this.client.config({apiVersion: this.state.customApiVersion})
+        this._localStorage.set('apiVersion', this.state.customApiVersion)
+        this._client.config({apiVersion: this.state.customApiVersion})
       }
     )
   }
 
-  handleListenerMutation(mut) {
-    // eslint-disable-next-line react/no-access-state-in-setstate
-    const listenMutations = [mut].concat(this.state.listenMutations)
-    if (listenMutations.length > 50) {
-      listenMutations.pop()
-    }
-
-    this.setState({listenMutations})
+  handleListenerMutation(mut: MutationEvent) {
+    this.setState(({listenMutations}) => ({
+      listenMutations:
+        listenMutations.length === 50
+          ? [mut, ...listenMutations.slice(0, 49)]
+          : [mut, ...listenMutations],
+    }))
   }
 
-  handleKeyDown(event) {
-    const {validParams} = this.state
+  handleKeyDown(event: KeyboardEvent) {
+    const {hasValidParams} = this.state
     const isWithinRoot =
       this._visionRoot.current && nodeContains(this._visionRoot.current, event.target)
-    if (isRunHotkey(event) && isWithinRoot && validParams) {
+    if (isRunHotkey(event) && isWithinRoot && hasValidParams) {
       this.handleQueryExecution()
+      event.preventDefault()
+      event.stopPropagation()
     }
   }
 
@@ -313,12 +385,16 @@ class VisionGui extends React.PureComponent {
       return
     }
 
-    const paramsError = params instanceof Error && params
-    const url = this.client.getUrl(
-      this.client.getDataUrl('listen', encodeQueryString(query, params))
+    const paramsError = params instanceof Error ? params : undefined
+    const encodeParams = params instanceof Error ? {} : params || {}
+    const url = this._client.getUrl(
+      this._client.getDataUrl('listen', encodeQueryString(query, encodeParams))
     )
-    storeState('lastQuery', query)
-    storeState('lastParams', rawParams)
+
+    const shouldExecute = !paramsError && query.trim().length > 0
+
+    this._localStorage.set('lastQuery', query)
+    this._localStorage.set('lastParams', rawParams)
 
     this.cancelQuery()
 
@@ -326,19 +402,18 @@ class VisionGui extends React.PureComponent {
       url,
       listenMutations: [],
       queryInProgress: false,
-      result: undefined,
-      listenInProgress: !paramsError && Boolean(query),
-      error: paramsError || undefined,
-      // result: undefined,
-      queryTime: null,
-      e2eTime: null,
+      queryResult: undefined,
+      listenInProgress: shouldExecute,
+      error: paramsError,
+      queryTime: undefined,
+      e2eTime: undefined,
     })
 
-    if (!query || paramsError) {
+    if (!shouldExecute) {
       return
     }
 
-    this.subscribers.listen = this.client.listen(query, params, {}).subscribe({
+    this._listenSubscription = this._client.listen(query, params).subscribe({
       next: this.handleListenerMutation,
       error: (error) =>
         this.setState({
@@ -352,8 +427,8 @@ class VisionGui extends React.PureComponent {
   handleQueryExecution() {
     const {query, params, rawParams} = this.state
     const paramsError = params instanceof Error && params
-    storeState('lastQuery', query)
-    storeState('lastParams', rawParams)
+    this._localStorage.set('lastQuery', query)
+    this._localStorage.set('lastParams', rawParams)
 
     this.cancelListener()
 
@@ -362,35 +437,33 @@ class VisionGui extends React.PureComponent {
       listenInProgress: false,
       listenMutations: [],
       error: paramsError || undefined,
-      result: undefined,
-      queryTime: null,
-      e2eTime: null,
+      queryResult: undefined,
+      queryTime: undefined,
+      e2eTime: undefined,
     })
 
     if (!query || paramsError) {
-      return
+      return true
     }
 
-    const url = this.client.getUrl(
-      this.client.getDataUrl('query', encodeQueryString(query, params))
+    const url = this._client.getUrl(
+      this._client.getDataUrl('query', encodeQueryString(query, params))
     )
     this.setState({url})
 
     const queryStart = Date.now()
 
-    this.subscribers.query = this.client.observable
+    this._querySubscription = this._client.observable
       .fetch(query, params, {filterResponse: false, tag: 'vision'})
       .subscribe({
-        next: (res) => {
+        next: (res) =>
           this.setState({
-            executedQuery: query,
             queryTime: res.ms,
             e2eTime: Date.now() - queryStart,
-            result: res.result,
+            queryResult: res.result,
             queryInProgress: false,
-            error: null,
-          })
-        },
+            error: undefined,
+          }),
         error: (error) =>
           this.setState({
             error,
@@ -398,42 +471,48 @@ class VisionGui extends React.PureComponent {
             queryInProgress: false,
           }),
       })
+
+    return true
   }
 
-  handleQueryChange(data) {
-    this.setState({query: data.query})
+  handleQueryChange(query: string) {
+    this.setState({query})
   }
 
-  handleParamsChange(data) {
-    const {raw, parsed, valid, validationError} = data
-    const paramValidationMarkers = valid
-      ? []
-      : [
-          {
-            level: 'error',
-            item: {
-              message: validationError || 'Invalid JSON',
-            },
-          },
-        ]
+  handleParamsChange({raw, parsed, valid, error}: ParamsEditorChangeEvent) {
+    this.setState(
+      {
+        rawParams: raw,
+        params: parsed,
+        hasValidParams: valid,
+        paramsError: error,
+      },
+      () => this._localStorage.set('lastParams', raw)
+    )
+  }
 
-    this.setState({
-      rawParams: raw,
-      params: parsed,
-      validParams: valid,
-      paramValidationMarkers,
-    })
+  handleCopyUrl() {
+    const el = this._operationUrlElement.current
+    if (!el) {
+      return
+    }
+
+    try {
+      el.select()
+      document.execCommand('copy')
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('Unable to copy to clipboard :(')
+    }
   }
 
   render() {
     const {datasets} = this.props
     const {
       error,
-      result,
+      queryResult,
       url,
-      query,
       queryInProgress,
-      executedQuery,
       listenInProgress,
       paneSizeOptions,
       queryTime,
@@ -443,27 +522,19 @@ class VisionGui extends React.PureComponent {
       dataset,
       customApiVersion,
       isValidApiVersion,
-      validParams,
-      paramValidationMarkers,
+      hasValidParams,
+      paramsError,
     } = this.state
-    const hasResult = !error && !queryInProgress && typeof result !== 'undefined'
-    const hasEmptyResult = hasResult && Array.isArray(result) && result.length === 0
-
-    // Note that because of react-json-inspector, we need at least one
-    // addressable, non-generated class name. Therefore;
-    // leave `sanity-vision` untouched!
-    const visionClass = ['sanity-vision'].filter(Boolean).join(' ')
+    const hasResult = !error && !queryInProgress && typeof queryResult !== 'undefined'
 
     return (
       <Root
-        tone="default"
-        className={visionClass}
+        direction="column"
+        height="fill"
         ref={this._visionRoot}
-        display="flex"
         sizing="border"
         overflow="hidden"
       >
-        <GlobalCodeMirrorStyle />
         <Header paddingX={3} paddingY={2}>
           <Grid columns={[6, 6, 12]}>
             {/* Dataset selector */}
@@ -474,7 +545,7 @@ class VisionGui extends React.PureComponent {
                 </Card>
                 <Select value={dataset} onChange={this.handleChangeDataset}>
                   {datasets.map((ds) => (
-                    <option key={ds.name}>{ds.name}</option>
+                    <option key={ds}>{ds}</option>
                   ))}
                 </Select>
               </Stack>
@@ -487,10 +558,10 @@ class VisionGui extends React.PureComponent {
                   <StyledLabel>API version</StyledLabel>
                 </Card>
                 <Select
-                  value={customApiVersion ? 'other' : apiVersion}
+                  value={customApiVersion === false ? apiVersion : 'other'}
                   onChange={this.handleChangeApiVersion}
                 >
-                  {apiVersions.map((version) => (
+                  {API_VERSIONS.map((version) => (
                     <option key={version}>{version}</option>
                   ))}
                   <option key="other" value="other">
@@ -501,7 +572,7 @@ class VisionGui extends React.PureComponent {
             </Box>
 
             {/* Custom API version input */}
-            {customApiVersion && (
+            {customApiVersion !== false && (
               <Box padding={1} column={2}>
                 <Stack>
                   <Card paddingY={2}>
@@ -509,7 +580,8 @@ class VisionGui extends React.PureComponent {
                   </Card>
 
                   <TextInput
-                    value={typeof customApiVersion === 'string' ? customApiVersion : ''}
+                    ref={this._customApiVersionElement}
+                    value={customApiVersion}
                     onChange={this.handleCustomApiVersionChange}
                     customValidity={isValidApiVersion ? undefined : 'Invalid API version'}
                   />
@@ -524,15 +596,15 @@ class VisionGui extends React.PureComponent {
                   <Card paddingY={2}>
                     <StyledLabel>
                       Query URL&nbsp;
-                      <QueryCopyLink onClick={handleCopyUrl}>[copy]</QueryCopyLink>
+                      <QueryCopyLink onClick={this.handleCopyUrl}>[copy]</QueryCopyLink>
                     </StyledLabel>
                   </Card>
                   <TextInput
                     readOnly
-                    id="vision-query-url"
+                    ref={this._operationUrlElement}
                     value={url}
                     iconRight={CopyIcon}
-                    onClick={handleCopyUrl}
+                    onClick={this.handleCopyUrl}
                   />
                 </Stack>
               </Box>
@@ -567,38 +639,37 @@ class VisionGui extends React.PureComponent {
                 <InputContainer display="flex" ref={this._queryEditorContainer}>
                   <Card flex={1}>
                     <InputBackgroundContainerLeft>
-                      <Flex marginLeft={3}>
+                      <Flex>
                         <StyledLabel muted>Query</StyledLabel>
                       </Flex>
                     </InputBackgroundContainerLeft>
-                    <QueryEditor
-                      value={this.state.query}
-                      onExecute={this.handleQueryExecution}
-                      onChange={this.handleQueryChange}
-                      schema={this.props.schema}
-                    />
+                    <VisionCodeMirror value={this.state.query} onChange={this.handleQueryChange} />
                   </Card>
                 </InputContainer>
                 <InputContainer display="flex" ref={this._paramsEditorContainer}>
-                  <Card flex={1} tone={validParams ? 'default' : 'critical'}>
+                  <Card flex={1} tone={hasValidParams ? 'default' : 'critical'}>
                     <InputBackgroundContainerLeft>
-                      <Flex marginLeft={3}>
+                      <Flex>
                         <StyledLabel muted>Params</StyledLabel>
-                        {paramValidationMarkers.length > 0 && (
-                          <Box marginLeft={2}>
-                            <FormFieldValidationStatus
-                              fontSize={1}
-                              validation={paramValidationMarkers}
-                            />
-                          </Box>
+                        {paramsError && (
+                          <Tooltip
+                            placement="top-end"
+                            content={
+                              <Card padding={2}>
+                                <Text>{paramsError}</Text>
+                              </Card>
+                            }
+                          >
+                            <Box padding={1} marginX={2}>
+                              <Text>
+                                <ErrorOutlineIcon />
+                              </Text>
+                            </Box>
+                          </Tooltip>
                         )}
                       </Flex>
                     </InputBackgroundContainerLeft>
-                    <ParamsEditor
-                      value={this.state.rawParams}
-                      onExecute={this.handleQueryExecution}
-                      onChange={this.handleParamsChange}
-                    />
+                    <ParamsEditor value={this.state.rawParams} onChange={this.handleParamsChange} />
                   </Card>
                   {/* Controls (listen/run) */}
                   <ControlsContainer>
@@ -612,7 +683,7 @@ class VisionGui extends React.PureComponent {
                           </Card>
                         }
                         placement="top"
-                        disabled={validParams}
+                        disabled={hasValidParams}
                         portal
                       >
                         <Flex justify="space-evenly">
@@ -630,7 +701,7 @@ class VisionGui extends React.PureComponent {
                                 onClick={this.handleQueryExecution}
                                 icon={PlayIcon}
                                 loading={queryInProgress}
-                                disabled={listenInProgress || !validParams}
+                                disabled={listenInProgress || !hasValidParams}
                                 tone="primary"
                                 text="Fetch"
                               />
@@ -643,7 +714,7 @@ class VisionGui extends React.PureComponent {
                               icon={listenInProgress ? StopIcon : PlayIcon}
                               text={listenInProgress ? 'Stop' : 'Listen'}
                               mode="ghost"
-                              disabled={!validParams}
+                              disabled={!hasValidParams}
                               tone={listenInProgress ? 'positive' : 'default'}
                             />
                           </Card>
@@ -660,9 +731,9 @@ class VisionGui extends React.PureComponent {
                   flex={1}
                   overflow="hidden"
                   tone={error ? 'critical' : 'default'}
-                  $isInvalid={error}
+                  $isInvalid={Boolean(error)}
                 >
-                  <Result padding={3} paddingTop={5} overflow="auto" $isInvalid={error}>
+                  <Result padding={3} paddingTop={5} overflow="auto">
                     <InputBackgroundContainer>
                       <Box marginLeft={3}>
                         <StyledLabel muted>Result</StyledLabel>
@@ -678,12 +749,7 @@ class VisionGui extends React.PureComponent {
                         <QueryErrorDialog error={error} />
                       </Box>
                     )}
-                    {hasResult && !hasEmptyResult && <ResultView data={result} query={query} />}
-                    {hasEmptyResult && (
-                      <Box>
-                        <NoResultsDialog query={executedQuery} dataset={dataset} />
-                      </Box>
-                    )}
+                    {hasResult && <ResultView data={queryResult} />}
                     {listenMutations && listenMutations.length > 0 && (
                       <ResultView data={listenMutations} />
                     )}
@@ -714,5 +780,3 @@ class VisionGui extends React.PureComponent {
     )
   }
 }
-
-export default VisionGui
