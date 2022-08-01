@@ -89,7 +89,6 @@ export function createWithPatches(
   incomingPatches$?: Observable<{
     patches: Patch[]
     snapshot: PortableTextBlock[] | undefined
-    previousSnapshot: PortableTextBlock[] | undefined
   }>
 ): [editor: (editor: PortableTextSlateEditor) => PortableTextSlateEditor, cleanupFn: () => void] {
   let previousChildren: Descendant[]
@@ -111,7 +110,7 @@ export function createWithPatches(
       // Inspect incoming patches and adjust editor selection accordingly.
       if (incomingPatches$) {
         debug('Subscribing to patches')
-        patchSubscription = incomingPatches$.subscribe(({patches, snapshot, previousSnapshot}) => {
+        patchSubscription = incomingPatches$.subscribe(({patches, snapshot}) => {
           const remotePatches = patches.filter((p) => p.origin !== 'local')
           if (remotePatches.length !== 0) {
             const prevOperations = [...editor.operations]
@@ -122,7 +121,7 @@ export function createWithPatches(
                   withoutSaving(editor, () => {
                     withPreserveKeys(editor, () => {
                       try {
-                        patchToOperations(editor, patch, patches, snapshot, previousSnapshot)
+                        patchToOperations(editor, patch, patches, snapshot)
                       } catch (err) {
                         debug('Got error trying to create operations from patch')
                         console.error(err)

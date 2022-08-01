@@ -288,7 +288,6 @@ export type OnCopyFn = (
 export type PatchObservable = Observable<{
   patches: Patch[]
   snapshot: PortableTextBlock[] | undefined
-  previousSnapshot: PortableTextBlock[] | undefined
 }>
 
 export type RenderAttributes = {

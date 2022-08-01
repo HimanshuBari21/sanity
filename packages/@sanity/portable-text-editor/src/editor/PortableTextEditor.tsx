@@ -103,20 +103,12 @@ export class PortableTextEditor extends React.Component<PortableTextEditorProps,
       // Buffer patches until we are no longer producing local patches
       this.incomingPatches$ = props.incomingPatches$
         .pipe(
-          tap(
-            ({
-              patches,
-            }: {
-              patches: Patch[]
-              snapshot: PortableTextBlock[] | undefined
-              previousSnapshot: PortableTextBlock[] | undefined
-            }) => {
-              // Reset hasPendingLocalPatches when local patches are returned
-              if (patches.some((p) => p.origin === 'local')) {
-                this.hasPendingLocalPatches.current = false
-              }
+          tap(({patches}: {patches: Patch[]; snapshot: PortableTextBlock[] | undefined}) => {
+            // Reset hasPendingLocalPatches when local patches are returned
+            if (patches.some((p) => p.origin === 'local')) {
+              this.hasPendingLocalPatches.current = false
             }
-          )
+          })
         )
         .pipe(
           bufferUntil(() => !this.hasPendingLocalPatches.current),

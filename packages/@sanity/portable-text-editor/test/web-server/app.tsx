@@ -15,7 +15,6 @@ export function App() {
       new Subject<{
         patches: Patch[]
         snapshot: PortableTextBlock[] | undefined
-        previousSnapshot: PortableTextBlock[] | undefined
       }>(),
     []
   )
@@ -55,7 +54,6 @@ export function App() {
                 incomingPatches$.next({
                   patches: data.patches,
                   snapshot: data.snapshot,
-                  previousSnapshot: data.previousSnapshot,
                 })
               }
               break

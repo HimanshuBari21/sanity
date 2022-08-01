@@ -13,7 +13,6 @@ export interface PatchesData {
   patches: Array<FormPatch>
   shouldReset: boolean
   snapshot: any
-  previousSnapshot?: any
 }
 
 /**
@@ -32,7 +31,6 @@ export function usePatches(props: {path: Path}): {
 
   const subscribe = useCallback(
     (subscriber: PatchesSubscriber) => {
-      let lastSnapshot: unknown
       return patchChannel.subscribe(({snapshot, patches}) => {
         const filteredPatches = patches
           .filter((patch) => _startsWith(patch.path, path))
@@ -45,10 +43,8 @@ export function usePatches(props: {path: Path}): {
           subscriber({
             shouldReset: _shouldReset(path, patches),
             snapshot: isRecord(snapshot) ? _getValueAtPath(snapshot, path) : {},
-            previousSnapshot: lastSnapshot,
             patches: filteredPatches,
           })
-          lastSnapshot = isRecord(snapshot) ? _getValueAtPath(snapshot, path) : {}
         }
       })
     },

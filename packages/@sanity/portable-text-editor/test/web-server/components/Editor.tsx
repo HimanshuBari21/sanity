@@ -56,7 +56,6 @@ export const Editor = ({
   incomingPatches$: Subject<{
     patches: Patch[]
     snapshot: PortableTextBlock[] | undefined
-    previousSnapshot: PortableTextBlock[] | undefined
   }>
   selection: EditorSelection | null
 }) => {

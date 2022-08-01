@@ -29,7 +29,6 @@ const sub = messages.subscribe((next) => {
         ...data,
         patches,
         snapshot: data.snapshot,
-        previousSnapshot: data.previousSnapshot,
       })
       socket.send(newData)
       return
@@ -95,7 +94,6 @@ app.ws('/', (s, req) => {
         JSON.stringify({
           ...data,
           snapshot: valueMap[testId],
-          previousSnapshot: prevValue || valueMap[testId],
         })
       )
     }

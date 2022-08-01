@@ -20,8 +20,7 @@ export function createPatchToOperations(
   editor: Editor,
   patch: Patch,
   patches: Patch[],
-  snapshot: PortableTextBlock[] | undefined,
-  previousSnapshot: PortableTextBlock[] | undefined
+  snapshot: PortableTextBlock[] | undefined
 ) => boolean {
   function diffMatchPatch(editor: Editor, patch: DiffMatchPatch) {
     const blockKey = findLastKey([patch.path[0]])
@@ -331,13 +330,7 @@ export function createPatchToOperations(
 
   let previousPatch: Patch | undefined
 
-  return function (
-    editor: Editor,
-    patch: Patch,
-    patches: Patch[],
-    snapshot: PortableTextBlock[] | undefined,
-    previousSnapshot: PortableTextBlock[] | undefined
-  ): boolean {
+  return function (editor: Editor, patch: Patch): boolean {
     let changed = false
     debug('\n\nNEW PATCH =============================================================')
     debug(JSON.stringify(patch, null, 2))
