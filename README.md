@@ -96,3 +96,4 @@ Found a bug, or want to contribute code? Pull requests and issues are most welco
 ## License
 
 Sanity Studio is available under the [_MIT License_](https://github.com/sanity-io/sanity/blob/current/LICENSE)
+
