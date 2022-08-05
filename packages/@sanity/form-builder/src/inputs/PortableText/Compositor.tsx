@@ -1,17 +1,14 @@
-import {Subject} from 'rxjs'
 import React, {useEffect, useState, useMemo, useCallback, useRef} from 'react'
 import {FormFieldPresence} from '@sanity/base/presence'
 import {
   EditorSelection,
   OnCopyFn,
   OnPasteFn,
-  Patch as EditorPatch,
   PortableTextBlock,
   PortableTextEditor,
   usePortableTextEditor,
   HotkeyOptions,
   RenderAttributes,
-  Type,
 } from '@sanity/portable-text-editor'
 import {Path, isKeySegment, Marker} from '@sanity/types'
 import {
@@ -29,7 +26,7 @@ import {BlockObject} from './object/BlockObject'
 import {InlineObject} from './object/InlineObject'
 import {EditObject} from './object/EditObject'
 import {Annotation, TextBlock} from './text'
-import {RenderBlockActions, RenderCustomMarkers} from './types'
+import {FIXME, RenderBlockActions, RenderCustomMarkers} from './types'
 import {Editor} from './Editor'
 import {ExpandedLayer, Root} from './Compositor.styles'
 import {useObjectEditData} from './hooks/useObjectEditData'
@@ -48,12 +45,12 @@ interface InputProps {
   hotkeys: HotkeyOptions
   isFullscreen: boolean
   markers: Marker[]
+  onActivate: () => void
   onChange: (event: PatchEvent) => void
   onCopy?: OnCopyFn
   onFocus: (path: Path) => void
   onPaste?: OnPasteFn
   onToggleFullscreen: () => void
-  patches$: Subject<EditorPatch>
   presence: FormFieldPresence[]
   readOnly: boolean | null
   renderBlockActions?: RenderBlockActions
@@ -68,12 +65,12 @@ export function Compositor(props: InputProps) {
     hotkeys,
     isFullscreen,
     markers,
+    onActivate,
     onChange,
     onCopy,
     onFocus,
     onPaste,
     onToggleFullscreen,
-    patches$,
     presence,
     readOnly,
     renderBlockActions,
@@ -108,7 +105,7 @@ export function Compositor(props: InputProps) {
     onEditObjectClose,
   } = useObjectEditFormBuilderFocus(onFocus)
 
-  const {onObjectEditFormBuilderChange} = useObjectEditFormBuilderChange(onChange, patches$)
+  const {onObjectEditFormBuilderChange} = useObjectEditFormBuilderChange(onChange)
 
   // This is what PortableTextEditor will use to scroll the content into view when editing
   // inside the editor
@@ -140,17 +137,6 @@ export function Compositor(props: InputProps) {
   )
   const editorHotkeys = useHotkeys(hotkeysWithFullscreenToggle)
 
-  const focus = useCallback((): void => {
-    PortableTextEditor.focus(editor)
-  }, [editor])
-
-  const handleActivate = useCallback((): void => {
-    if (!isActive) {
-      setIsActive(true)
-      focus()
-    }
-  }, [focus, isActive])
-
   const editObjectKey = useMemo(() => {
     const last = objectEditData?.editorPath.slice(-1)[0]
     if (last && isKeySegment(last)) {
@@ -177,7 +163,7 @@ export function Compositor(props: InputProps) {
   const renderBlock = useCallback(
     (
       block: PortableTextBlock,
-      blockType: Type,
+      blockType: FIXME,
       attributes: RenderAttributes,
       defaultRender: (b: PortableTextBlock) => JSX.Element
     ) => {
@@ -320,7 +306,7 @@ export function Compositor(props: InputProps) {
         onCopy={onCopy}
         onPaste={onPaste}
         onToggleFullscreen={handleToggleFullscreen}
-        readOnly={isActive === false || readOnly}
+        readOnly={readOnly}
         renderAnnotation={renderAnnotation}
         renderBlock={renderBlock}
         renderChild={renderChild}
@@ -335,7 +321,6 @@ export function Compositor(props: InputProps) {
       editorHotkeys,
       handleToggleFullscreen,
       initialSelection,
-      isActive,
       isFullscreen,
       onCopy,
       onFocus,
@@ -350,29 +335,47 @@ export function Compositor(props: InputProps) {
   )
 
   const boundaryElm = isFullscreen ? scrollElement : boundaryElement
-  const editObjectNode = (
-    <BoundaryElementProvider element={boundaryElm}>
-      <EditObject
-        focusPath={focusPath}
-        objectEditData={objectEditData}
-        markers={markers} // TODO: filter relevant?
-        onBlur={onEditObjectFormBuilderBlur}
-        onChange={onObjectEditFormBuilderChange}
-        onClose={onEditObjectClose}
-        onFocus={onEditObjectFormBuilderFocus}
-        readOnly={readOnly}
-        presence={presence}
-        scrollElement={boundaryElm}
-        value={value}
-      />
-    </BoundaryElementProvider>
+  const editObjectNode = useMemo(
+    () => (
+      <BoundaryElementProvider element={boundaryElm}>
+        <EditObject
+          focusPath={focusPath}
+          objectEditData={objectEditData}
+          markers={markers} // TODO: filter relevant?
+          onBlur={onEditObjectFormBuilderBlur}
+          onChange={onObjectEditFormBuilderChange}
+          onClose={onEditObjectClose}
+          onFocus={onEditObjectFormBuilderFocus}
+          readOnly={readOnly}
+          presence={presence}
+          scrollElement={boundaryElm}
+          value={value}
+        />
+      </BoundaryElementProvider>
+    ),
+    [
+      boundaryElm,
+      focusPath,
+      markers,
+      objectEditData,
+      onEditObjectClose,
+      onEditObjectFormBuilderBlur,
+      onEditObjectFormBuilderFocus,
+      onObjectEditFormBuilderChange,
+      presence,
+      readOnly,
+      value,
+    ]
   )
 
-  const children = (
-    <>
-      {editorNode}
-      {editObjectNode}
-    </>
+  const children = useMemo(
+    () => (
+      <>
+        {editorNode}
+        <BoundaryElementProvider element={boundaryElm}>{editObjectNode}</BoundaryElementProvider>
+      </>
+    ),
+    [boundaryElm, editObjectNode, editorNode]
   )
 
   const portal = usePortal()
@@ -383,14 +386,24 @@ export function Compositor(props: InputProps) {
       editor: portalElement,
       expanded: portal.element,
     }),
+
     [portal.element, portalElement, wrapperElement]
+  )
+
+  const editorLayer = useMemo(
+    () => (
+      <Portal __unstable_name={isFullscreen ? 'expanded' : 'collapsed'}>
+        <ExpandedLayer data-fullscreen={isFullscreen ? '' : undefined}>{children}</ExpandedLayer>
+      </Portal>
+    ),
+    [children, isFullscreen]
   )
 
   return (
     <PortalProvider __unstable_elements={portalElements}>
       <ActivateOnFocus
         message={ACTIVATE_ON_FOCUS_MESSAGE}
-        onActivate={handleActivate}
+        onActivate={onActivate}
         isOverlayActive={!isActive}
       >
         <ChangeIndicatorWithProvidedFullPath
@@ -401,10 +414,7 @@ export function Compositor(props: InputProps) {
         >
           <Root data-focused={hasFocus ? '' : undefined} data-read-only={readOnly ? '' : undefined}>
             <div data-wrapper="" ref={setWrapperElement}>
-              <Portal __unstable_name={isFullscreen ? 'expanded' : 'collapsed'}>
-                {/* TODO: Can we get rid of this DOM-rerender? */}
-                {isFullscreen ? <ExpandedLayer>{children}</ExpandedLayer> : children}
-              </Portal>
+              {editorLayer}
             </div>
             <div data-border="" />
           </Root>
