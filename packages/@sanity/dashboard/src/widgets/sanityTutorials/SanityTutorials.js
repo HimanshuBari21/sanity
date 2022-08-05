@@ -96,6 +96,7 @@ class SanityTutorials extends React.Component {
                     as="a"
                     href={`https://www.sanity.io/docs?ref=dashboard-${templateRepoId || 'plugin'}`}
                     text="Go go docs"
+                    target="_blank"
                   />
                 </Stack>
               </Flex>
