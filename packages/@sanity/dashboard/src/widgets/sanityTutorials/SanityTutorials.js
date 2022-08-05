@@ -20,7 +20,7 @@ const FeedItem = ({feedItem}) => {
       href={createUrl(guideOrTutorial.slug, guideOrTutorial._type) || feedItem.externalLink}
       presenterSubtitle={subtitle}
       showPlayIcon={feedItem.hasVideo}
-      posterURL={urlBuilder.image(feedItem.poster).height(360).url()}
+      posterURL={feedItem.poster ? urlBuilder.image(feedItem.poster).height(360).url() : undefined}
     />
   )
 }
@@ -81,7 +81,7 @@ class SanityTutorials extends React.Component {
           <Card tone="primary" padding={4} radius={2} border marginTop={4}>
             <Flex direction={['column', 'column', 'row']}>
               <Stack space={4} flex={1} paddingRight={[0, 0, 4]}>
-                <Heading>Getting started Guide</Heading>
+                <Heading>Getting Started Guide</Heading>
                 <Text>
                   It’s time to learn how to build schemas, create content and connect it with other
                   applications.
