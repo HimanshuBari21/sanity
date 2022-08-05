@@ -49,6 +49,7 @@ export function buildOptions(opts: {
         tsconfigOverride: {
           compilerOptions: {
             module: 'ESNext',
+            target: 'ES3',
           },
         },
         typescript: require('typescript'),
