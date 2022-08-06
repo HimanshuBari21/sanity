@@ -1,0 +1,13 @@
+.ejs file
+
+function replaceLast(str, oldChar, newChar) 
+{
+    str = str.substring(6)
+    return str.substring(0, str.lastIndexOf(oldChar)) + newChar + str.substring(str.lastIndexOf(oldChar) + 1)
+}
+	
+<% tshirt.forEach(EachTShirt=> { %>
+	<img src="https://cdn.sanity.io/images/0x6zl8tm/tshirts/<%= replaceLast(EachTShirt.img.asset._ref, "-", "." ) %>" alt="<%= EachTShirt.name %>">
+    <p><%= EachTShirt.name %></p>
+    <p>Rs. <%= EachTShirt.price %></p>
+<% }) %>
